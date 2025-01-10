@@ -8,6 +8,9 @@ from torchaudio import functional as F
 from transformers import pipeline
 from transformers.pipelines.audio_utils import ffmpeg_read
 
+from speechbox.utils.filter import collect_chunks
+from speechbox.utils.vad import get_speech_timestamps, VadOptions
+
 
 class ASRDiarizationPipeline:
     def __init__(
@@ -94,6 +97,10 @@ class ASRDiarizationPipeline:
         }
         
         inputs, diarizer_inputs = self.preprocess(inputs)
+        # Filter out free periods of non-speaking periods
+        speech_chunks = get_speech_timestamps(diarizer_inputs, VadOptions())
+        audio_chunks, chunks_metadata = collect_chunks(diarizer_inputs, speech_chunks)
+        diarizer_inputs = np.concatenate(audio_chunks, axis=0)
 
         diarization = self.diarization_pipeline(
             {"waveform": diarizer_inputs, "sample_rate": self.sampling_rate},
@@ -146,6 +153,9 @@ class ASRDiarizationPipeline:
 
         # align the diarizer timestamps and the ASR timestamps
         for segment in new_segments:
+            if len(end_timestamps) <= 0:
+                break
+
             # get the diarizer end timestamp
             end_time = segment["segment"]["end"]
             # find the ASR end timestamp that is closest to the diarizer's end timestamp and cut the transcript to here
@@ -171,7 +181,7 @@ class ASRDiarizationPipeline:
 
     # Adapted from transformers.pipelines.automatic_speech_recognition.AutomaticSpeechRecognitionPipeline.preprocess
     # (see https://github.com/huggingface/transformers/blob/238449414f88d94ded35e80459bb6412d8ab42cf/src/transformers/pipelines/automatic_speech_recognition.py#L417)
-    def preprocess(self, inputs):
+    def preprocess(self, inputs) -> tuple[np.ndarray, torch.Tensor]:
         if isinstance(inputs, str):
             if inputs.startswith("http://") or inputs.startswith("https://"):
                 # We need to actually check for a real protocol, otherwise it's impossible to use a local file
